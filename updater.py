@@ -3,7 +3,6 @@ import akshare as ak
 from supabase import create_client, Client
 import pandas as pd
 from datetime import date, timedelta
-from typing import Literal
 
 # 获取 Supabase 连接信息
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -15,6 +14,7 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 # 获取最新交易日
 def latest_cn_trading_day() -> date:
     now = pd.Timestamp.now(tz='Asia/Shanghai')
+    # 如果当前时间早于收盘时间（15:00），则取前一个交易日
     ref = now.date() if now.hour >= 15 else (now.date() - timedelta(1))
     cal = ak.tool_trade_date_hist_sina()
     cal["trade_date"] = pd.to_datetime(cal["trade_date"]).dt.date
@@ -69,28 +69,33 @@ def fetch_data_and_sync():
         
         # 获取基本面数据
         try:
-            df_fundamental = ak.stock_financial_analysis_indicator_em(symbol=ticker)
+            df_fundamental = ak.stock_dividend_yjkb_em(date=last_td.strftime('%Y%m%d'))
+            
             if df_fundamental is not None and not df_fundamental.empty:
-                # 修复：确保交易日期和股息率列存在
-                if '交易日期' in df_fundamental.columns and '股息率' in df_fundamental.columns:
-                    df_fundamental = df_fundamental.rename(columns={
-                        "交易日期": "date", 
+                # 筛选出当前股票的数据
+                df_fundamental_ticker = df_fundamental[df_fundamental['股票代码'] == ticker].copy()
+                
+                if not df_fundamental_ticker.empty:
+                    # 重命名列并处理日期
+                    df_fundamental_ticker = df_fundamental_ticker.rename(columns={
+                        "公告日期": "date", 
                         "股息率": "dividend_yield"
                     })
-                    df_fundamental['date'] = pd.to_datetime(df_fundamental['date']).dt.date
-                    df_fundamental['ticker'] = ticker
-
-                    df_fundamental = df_fundamental[df_fundamental.date == last_td].copy()
+                    df_fundamental_ticker['date'] = pd.to_datetime(df_fundamental_ticker['date']).dt.date
+                    df_fundamental_ticker['ticker'] = ticker
                     
-                    if not df_fundamental.empty:
-                        df_fundamental['date'] = df_fundamental['date'].astype(str)
-                        data_fundamental = df_fundamental[['ticker', 'date', 'dividend_yield']].to_dict('records')
+                    # 过滤最新交易日的数据
+                    df_fundamental_ticker = df_fundamental_ticker[df_fundamental_ticker.date == last_td].copy()
+                    
+                    if not df_fundamental_ticker.empty:
+                        df_fundamental_ticker['date'] = df_fundamental_ticker['date'].astype(str)
+                        data_fundamental = df_fundamental_ticker[['ticker', 'date', 'dividend_yield']].to_dict('records')
                         supabase.table('fundamental_data').upsert(data_fundamental).execute()
                         print(f"  → 基本面数据上传成功")
                     else:
                         print("  → 基本面数据已最新，无需更新")
                 else:
-                    print("  → 基本面数据缺失必要列，跳过")
+                    print("  → 该股票基本面数据为空，跳过")
             else:
                 print("  → 基本面数据为空，跳过")
 
