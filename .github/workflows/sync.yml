@@ -22,7 +22,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install akshare pandas supabase-py
+          pip install akshare pandas supabase
 
       - name: Run sync script
         env:
