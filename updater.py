@@ -5,6 +5,7 @@ import pandas as pd
 from datetime import date, timedelta
 import yfinance as yf
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # 获取 Supabase 连接信息
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -29,96 +30,116 @@ def latest_cn_trading_day() -> date:
     cal["trade_date"] = pd.to_datetime(cal["trade_date"]).dt.date
     return cal.loc[cal.trade_date <= ref, "trade_date"].iloc[-1]
 
+def process_stock(ticker: str, name: str, last_td: date):
+    """
+    处理单只股票的下载和上传逻辑，为并行处理设计
+    """
+    print(f"✅ 开始处理股票: {ticker} ({name})")
+    
+    # --- 获取日线数据 (带重试机制) ---
+    df_daily = None
+    for i in range(3):
+        try:
+            # 不设置start_date，akshare会从最早日期开始下载
+            df_daily = ak.stock_zh_a_hist(
+                symbol=ticker, 
+                period="daily", 
+                adjust="qfq"
+            )
+            if df_daily is not None and not df_daily.empty:
+                df_daily["ticker"] = ticker
+                df_daily["company_name"] = name
+                df_daily["日期"] = pd.to_datetime(df_daily["日期"]).dt.date
+                df_daily = df_daily.rename(columns={
+                    "日期": "date", "开盘": "open", "收盘": "close",
+                    "最高": "high", "最低": "low", "成交量": "volume"
+                })
+                df_daily['date'] = df_daily['date'].astype(str)
+                data_daily = df_daily[['ticker', 'date', 'company_name', 'open', 'high', 'low', 'close', 'volume']].to_dict('records')
+                supabase.table('daily_prices').upsert(data_daily).execute()
+                print(f"  → {ticker} 日线数据上传成功，共 {len(data_daily)} 条记录。")
+                break
+            else:
+                print(f"  → {ticker} 日线数据为空，跳过。")
+                break
+        except Exception as e:
+            if i < 2:
+                print(f"  ⚠️ {ticker} 日线数据下载失败，正在重试... ({i+1}/3)")
+                time.sleep(5)
+            else:
+                print(f"  ❌ {ticker} 日线数据下载/上传失败: {e}")
+                
+    # --- 获取基本面数据 (带重试机制) ---
+    data_fundamental = None
+    for i in range(3):
+        try:
+            yahoo_ticker = get_yahoo_ticker(ticker)
+            if yahoo_ticker is None:
+                print(f"  → {ticker} 无法获取雅虎股票代码，跳过基本面数据。")
+                break
+
+            stock = yf.Ticker(yahoo_ticker)
+            info = stock.info
+            
+            if info:
+                data_fundamental = {
+                    'ticker': ticker,
+                    'date': last_td.strftime('%Y-%m-%d'),
+                    'eps': info.get('trailingEps'),
+                    'pe': info.get('trailingPE'),
+                    'pb': info.get('priceToBook'),
+                    'total_market_cap': info.get('marketCap'),
+                    'dividend_yield': info.get('dividendYield')
+                }
+                if data_fundamental['dividend_yield'] is not None:
+                    data_fundamental['dividend_yield'] *= 100
+
+                supabase.table('fundamental_data').upsert([data_fundamental]).execute()
+                print(f"  → {ticker} 基本面数据上传成功。")
+                break
+            else:
+                print(f"  → {ticker} 基本面数据为空，跳过。")
+                break
+        except Exception as e:
+            if i < 2:
+                print(f"  ⚠️ {ticker} 基本面数据下载失败，正在重试... ({i+1}/3)")
+                time.sleep(5)
+            else:
+                print(f"  ❌ {ticker} 基本面数据下载/上传失败: {e}")
+
+
 def fetch_data_and_sync():
     last_td = latest_cn_trading_day()
     print(f"🚀 开始更新 A 股数据，最新交易日：{last_td}")
 
-    # 获取中证800成分股
     try:
         cons = ak.index_stock_cons_csindex("000906")
         cons_list = cons.rename(columns={
             "成分券代码": "ticker",
             "成分券名称": "company_name"
         })[["ticker", "company_name"]].drop_duplicates()
+        tickers = cons_list['ticker'].tolist()
+        names = cons_list['company_name'].tolist()
     except Exception as e:
         print(f"❌ 获取中证800成分股失败: {e}")
         return
-
-    # 批量获取数据并上传
-    for ticker, name in cons_list.itertuples(index=False):
-        print(f"✅ 处理股票: {ticker} ({name})")
+    
+    # 使用 ThreadPoolExecutor 进行并行处理
+    # max_workers 建议设置为 10-20，以平衡网络I/O和服务器负载
+    with ThreadPoolExecutor(max_workers=20) as executor:
+        # 将每个股票的任务提交到线程池
+        futures = {executor.submit(process_stock, ticker, name, last_td): ticker for ticker, name in zip(tickers, names)}
         
-        # --- 获取日线数据 (带重试机制) ---
-        df_daily = None
-        for i in range(3):  # 最多重试3次
+        # as_completed 可以在任务完成后立即获取结果，而不是按提交顺序
+        for future in as_completed(futures):
+            ticker = futures[future]
             try:
-                # 无论数据库中是否有数据，都从20200101开始下载
-                df_daily = ak.stock_zh_a_hist(
-                    symbol=ticker, 
-                    period="daily", 
-                    start_date="20200101", 
-                    adjust="qfq"
-                )
-                if df_daily is not None and not df_daily.empty:
-                    df_daily["ticker"] = ticker
-                    df_daily["company_name"] = name
-                    df_daily["日期"] = pd.to_datetime(df_daily["日期"]).dt.date
-                    df_daily = df_daily.rename(columns={
-                        "日期": "date", "开盘": "open", "收盘": "close",
-                        "最高": "high", "最低": "low", "成交量": "volume"
-                    })
-                    df_daily['date'] = df_daily['date'].astype(str)
-                    data_daily = df_daily[['ticker', 'date', 'company_name', 'open', 'high', 'low', 'close', 'volume']].to_dict('records')
-                    supabase.table('daily_prices').upsert(data_daily).execute()
-                    print(f"  → 日线数据上传成功，共 {len(data_daily)} 条记录。")
-                    break  # 成功后跳出重试循环
-                else:
-                    print("  → 日线数据为空，跳过")
-                    break
+                future.result() # 捕捉并处理线程内部的异常
             except Exception as e:
-                if i < 2:
-                    print(f"  ⚠️ 日线数据下载失败，正在重试... ({i+1}/3)")
-                    time.sleep(5)  # 等待5秒后重试
-                else:
-                    print(f"  ❌ 日线数据下载/上传失败: {e}")
-                    
-        # --- 获取基本面数据 (带重试机制) ---
-        data_fundamental = None
-        for i in range(3): # 最多重试3次
-            try:
-                yahoo_ticker = get_yahoo_ticker(ticker)
-                if yahoo_ticker is None:
-                    print("  → 无法获取雅虎股票代码，跳过基本面数据")
-                    break
+                print(f"❌ 股票 {ticker} 的任务执行失败: {e}")
+    
+    print("✅ 所有股票数据处理完成。")
 
-                stock = yf.Ticker(yahoo_ticker)
-                info = stock.info
-                
-                if info:
-                    data_fundamental = {
-                        'ticker': ticker,
-                        'date': last_td.strftime('%Y-%m-%d'),
-                        'eps': info.get('trailingEps'),
-                        'pe': info.get('trailingPE'),
-                        'pb': info.get('priceToBook'),
-                        'total_market_cap': info.get('marketCap'),
-                        'dividend_yield': info.get('dividendYield')
-                    }
-                    if data_fundamental['dividend_yield'] is not None:
-                        data_fundamental['dividend_yield'] *= 100
-
-                    supabase.table('fundamental_data').upsert([data_fundamental]).execute()
-                    print(f"  → 基本面数据上传成功")
-                    break
-                else:
-                    print("  → 基本面数据为空，跳过")
-                    break
-            except Exception as e:
-                if i < 2:
-                    print(f"  ⚠️ 基本面数据下载失败，正在重试... ({i+1}/3)")
-                    time.sleep(5)
-                else:
-                    print(f"  ❌ 基本面数据下载/上传失败: {e}")
 
 if __name__ == "__main__":
     fetch_data_and_sync()
