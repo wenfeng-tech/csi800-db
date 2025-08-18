@@ -3,6 +3,7 @@ import akshare as ak
 from supabase import create_client, Client
 import pandas as pd
 from datetime import date, timedelta
+from typing import Literal
 
 # 获取 Supabase 连接信息
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -34,12 +35,10 @@ def fetch_data_and_sync():
         print(f"❌ 获取中证800成分股失败: {e}")
         return
 
-    tickers = cons_list["ticker"].tolist()
-
     # 批量获取数据并上传
     for ticker, name in cons_list.itertuples(index=False):
         print(f"✅ 处理股票: {ticker} ({name})")
-
+        
         # 获取日线数据
         try:
             df_daily = ak.stock_zh_a_hist(
@@ -55,8 +54,10 @@ def fetch_data_and_sync():
                 })
                 # 过滤最新交易日的数据
                 df_daily = df_daily[df_daily.date == last_td].copy()
-
+                
                 if not df_daily.empty:
+                    # 修复：将日期转换为 ISO 8601 格式的字符串
+                    df_daily['date'] = df_daily['date'].astype(str)
                     data_daily = df_daily[['ticker', 'date', 'company_name', 'open', 'high', 'low', 'close', 'volume']].to_dict('records')
                     supabase.table('daily_prices').upsert(data_daily).execute()
                     print(f"  → 日线数据上传成功")
@@ -65,20 +66,26 @@ def fetch_data_and_sync():
 
         except Exception as e:
             print(f"  ❌ 日线数据下载/上传失败: {e}")
-
+        
         # 获取基本面数据
         try:
-            df_fundamental = ak.stock_a_lg_indicator(symbol=ticker)
+            # 修复：使用更稳定的接口
+            df_fundamental = ak.stock_financial_analysis_indicator_em(symbol=ticker)
             if not df_fundamental.empty:
-                df_fundamental["ticker"] = ticker
-                df_fundamental["trade_date"] = pd.to_datetime(df_fundamental["trade_date"]).dt.date
+                # 重命名列并处理日期
                 df_fundamental = df_fundamental.rename(columns={
-                    "trade_date": "date",
+                    "交易日期": "date", 
                     "股息率": "dividend_yield"
                 })
-                df_fundamental = df_fundamental[df_fundamental.date == last_td].copy()
+                df_fundamental['date'] = pd.to_datetime(df_fundamental['date']).dt.date
+                df_fundamental['ticker'] = ticker
 
+                # 过滤最新交易日的数据
+                df_fundamental = df_fundamental[df_fundamental.date == last_td].copy()
+                
                 if not df_fundamental.empty:
+                    # 修复：将日期转换为 ISO 8601 格式的字符串
+                    df_fundamental['date'] = df_fundamental['date'].astype(str)
                     data_fundamental = df_fundamental[['ticker', 'date', 'dividend_yield']].to_dict('records')
                     supabase.table('fundamental_data').upsert(data_fundamental).execute()
                     print(f"  → 基本面数据上传成功")
