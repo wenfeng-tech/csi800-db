@@ -44,7 +44,6 @@ def fetch_data_and_sync():
             df_daily = ak.stock_zh_a_hist(
                 symbol=ticker, period="daily", start_date="20200101", adjust="qfq"
             )
-            # 添加非空检查
             if df_daily is not None and not df_daily.empty:
                 df_daily["ticker"] = ticker
                 df_daily["company_name"] = name
@@ -53,11 +52,9 @@ def fetch_data_and_sync():
                     "日期": "date", "开盘": "open", "收盘": "close",
                     "最高": "high", "最低": "low", "成交量": "volume"
                 })
-                # 过滤最新交易日的数据
                 df_daily = df_daily[df_daily.date == last_td].copy()
                 
                 if not df_daily.empty:
-                    # 修复：将日期转换为 ISO 8601 格式的字符串
                     df_daily['date'] = df_daily['date'].astype(str)
                     data_daily = df_daily[['ticker', 'date', 'company_name', 'open', 'high', 'low', 'close', 'volume']].to_dict('records')
                     supabase.table('daily_prices').upsert(data_daily).execute()
@@ -73,27 +70,27 @@ def fetch_data_and_sync():
         # 获取基本面数据
         try:
             df_fundamental = ak.stock_financial_analysis_indicator_em(symbol=ticker)
-            # 添加非空检查
             if df_fundamental is not None and not df_fundamental.empty:
-                # 重命名列并处理日期
-                df_fundamental = df_fundamental.rename(columns={
-                    "交易日期": "date", 
-                    "股息率": "dividend_yield"
-                })
-                df_fundamental['date'] = pd.to_datetime(df_fundamental['date']).dt.date
-                df_fundamental['ticker'] = ticker
+                # 修复：确保交易日期和股息率列存在
+                if '交易日期' in df_fundamental.columns and '股息率' in df_fundamental.columns:
+                    df_fundamental = df_fundamental.rename(columns={
+                        "交易日期": "date", 
+                        "股息率": "dividend_yield"
+                    })
+                    df_fundamental['date'] = pd.to_datetime(df_fundamental['date']).dt.date
+                    df_fundamental['ticker'] = ticker
 
-                # 过滤最新交易日的数据
-                df_fundamental = df_fundamental[df_fundamental.date == last_td].copy()
-                
-                if not df_fundamental.empty:
-                    # 修复：将日期转换为 ISO 8601 格式的字符串
-                    df_fundamental['date'] = df_fundamental['date'].astype(str)
-                    data_fundamental = df_fundamental[['ticker', 'date', 'dividend_yield']].to_dict('records')
-                    supabase.table('fundamental_data').upsert(data_fundamental).execute()
-                    print(f"  → 基本面数据上传成功")
+                    df_fundamental = df_fundamental[df_fundamental.date == last_td].copy()
+                    
+                    if not df_fundamental.empty:
+                        df_fundamental['date'] = df_fundamental['date'].astype(str)
+                        data_fundamental = df_fundamental[['ticker', 'date', 'dividend_yield']].to_dict('records')
+                        supabase.table('fundamental_data').upsert(data_fundamental).execute()
+                        print(f"  → 基本面数据上传成功")
+                    else:
+                        print("  → 基本面数据已最新，无需更新")
                 else:
-                    print("  → 基本面数据已最新，无需更新")
+                    print("  → 基本面数据缺失必要列，跳过")
             else:
                 print("  → 基本面数据为空，跳过")
 
