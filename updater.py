@@ -44,7 +44,8 @@ def fetch_data_and_sync():
             df_daily = ak.stock_zh_a_hist(
                 symbol=ticker, period="daily", start_date="20200101", adjust="qfq"
             )
-            if not df_daily.empty:
+            # 添加非空检查
+            if df_daily is not None and not df_daily.empty:
                 df_daily["ticker"] = ticker
                 df_daily["company_name"] = name
                 df_daily["日期"] = pd.to_datetime(df_daily["日期"]).dt.date
@@ -63,15 +64,17 @@ def fetch_data_and_sync():
                     print(f"  → 日线数据上传成功")
                 else:
                     print("  → 日线数据已最新，无需更新")
+            else:
+                 print("  → 日线数据为空，跳过")
 
         except Exception as e:
             print(f"  ❌ 日线数据下载/上传失败: {e}")
         
         # 获取基本面数据
         try:
-            # 修复：使用更稳定的接口
             df_fundamental = ak.stock_financial_analysis_indicator_em(symbol=ticker)
-            if not df_fundamental.empty:
+            # 添加非空检查
+            if df_fundamental is not None and not df_fundamental.empty:
                 # 重命名列并处理日期
                 df_fundamental = df_fundamental.rename(columns={
                     "交易日期": "date", 
@@ -91,6 +94,8 @@ def fetch_data_and_sync():
                     print(f"  → 基本面数据上传成功")
                 else:
                     print("  → 基本面数据已最新，无需更新")
+            else:
+                print("  → 基本面数据为空，跳过")
 
         except Exception as e:
             print(f"  ❌ 基本面数据下载/上传失败: {e}")
