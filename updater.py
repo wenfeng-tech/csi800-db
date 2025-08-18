@@ -3,6 +3,7 @@ import akshare as ak
 from supabase import create_client, Client
 import pandas as pd
 from datetime import date, timedelta
+import yfinance as yf
 
 # 获取 Supabase 连接信息
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -11,10 +12,17 @@ SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 # 初始化 Supabase 客户端
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 
+# 雅虎财经股票代码映射函数
+def get_yahoo_ticker(akshare_ticker: str) -> str:
+    if akshare_ticker.startswith('6'):
+        return f"{akshare_ticker}.SS"  # 上海证券交易所 (Shanghai Stock Exchange)
+    elif akshare_ticker.startswith(('0', '3', '2')):
+        return f"{akshare_ticker}.SZ"  # 深圳证券交易所 (Shenzhen Stock Exchange)
+    return None
+
 # 获取最新交易日
 def latest_cn_trading_day() -> date:
     now = pd.Timestamp.now(tz='Asia/Shanghai')
-    # 如果当前时间早于收盘时间（15:00），则取前一个交易日
     ref = now.date() if now.hour >= 15 else (now.date() - timedelta(1))
     cal = ak.tool_trade_date_hist_sina()
     cal["trade_date"] = pd.to_datetime(cal["trade_date"]).dt.date
@@ -69,33 +77,32 @@ def fetch_data_and_sync():
         
         # 获取基本面数据
         try:
-            df_fundamental = ak.stock_dividend_yjkb_em(date=last_td.strftime('%Y%m%d'))
+            yahoo_ticker = get_yahoo_ticker(ticker)
+            if yahoo_ticker is None:
+                print("  → 无法获取雅虎股票代码，跳过基本面数据")
+                continue
+
+            stock = yf.Ticker(yahoo_ticker)
+            info = stock.info
             
-            if df_fundamental is not None and not df_fundamental.empty:
-                # 筛选出当前股票的数据
-                df_fundamental_ticker = df_fundamental[df_fundamental['股票代码'] == ticker].copy()
-                
-                if not df_fundamental_ticker.empty:
-                    # 重命名列并处理日期
-                    df_fundamental_ticker = df_fundamental_ticker.rename(columns={
-                        "公告日期": "date", 
-                        "股息率": "dividend_yield"
-                    })
-                    df_fundamental_ticker['date'] = pd.to_datetime(df_fundamental_ticker['date']).dt.date
-                    df_fundamental_ticker['ticker'] = ticker
-                    
-                    # 过滤最新交易日的数据
-                    df_fundamental_ticker = df_fundamental_ticker[df_fundamental_ticker.date == last_td].copy()
-                    
-                    if not df_fundamental_ticker.empty:
-                        df_fundamental_ticker['date'] = df_fundamental_ticker['date'].astype(str)
-                        data_fundamental = df_fundamental_ticker[['ticker', 'date', 'dividend_yield']].to_dict('records')
-                        supabase.table('fundamental_data').upsert(data_fundamental).execute()
-                        print(f"  → 基本面数据上传成功")
-                    else:
-                        print("  → 基本面数据已最新，无需更新")
-                else:
-                    print("  → 该股票基本面数据为空，跳过")
+            # 检查info是否包含所需数据
+            if info:
+                data_fundamental = {
+                    'ticker': ticker,
+                    'date': last_td.strftime('%Y-%m-%d'),
+                    'eps': info.get('trailingEps'),
+                    'pe': info.get('trailingPE'),
+                    'pb': info.get('priceToBook'),
+                    'total_market_cap': info.get('marketCap'),
+                    'dividend_yield': info.get('dividendYield')
+                }
+
+                # 雅虎的股息收益率是年度百分比，可能需要转换
+                if data_fundamental['dividend_yield'] is not None:
+                    data_fundamental['dividend_yield'] *= 100
+
+                supabase.table('fundamental_data').upsert([data_fundamental]).execute()
+                print(f"  → 基本面数据上传成功")
             else:
                 print("  → 基本面数据为空，跳过")
 
