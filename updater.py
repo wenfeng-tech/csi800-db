@@ -61,11 +61,11 @@ def ak_download_and_upload(ticker: str, name: str):
     if latest_date_db:
         # 如果数据库中存在记录，则只下载缺失的数据
         last_td = latest_cn_trading_day()
-        if latest_date_db >= last_td:
+        if latest_date_db and latest_date_db >= last_td:
             print(f"  → {ticker} 数据已是最新，跳过。")
             return
         start_date_str = (latest_date_db + timedelta(days=1)).strftime('%Y%m%d')
-
+        
     print(f"✅ 处理日线数据: {ticker} ({name}) - 开始日期: {start_date_str}")
     
     for i in range(1, MAX_RETRY + 1):
@@ -108,11 +108,28 @@ def main():
     print(f"🚀 开始更新 A 股数据，最新交易日：{last_td}")
 
     try:
-        cons = pd.read_csv('http://www.csindex.com.cn/uploads/file/autofile/cons/000906.txt', encoding='gbk', skiprows=1, sep='\t')
-        cons_list = cons.rename(columns={
-            "成分券代码": "ticker",
-            "成分券名称": "company_name"
-        })[["ticker", "company_name"]].drop_duplicates().itertuples(index=False)
+        # 获取最新的中证800成分股文件
+        cons = pd.read_csv(
+            'http://www.csindex.com.cn/uploads/file/autofile/cons/000906.txt',
+            encoding='gbk',
+            skiprows=1,
+            sep='\t'
+        )
+
+        # 检查并使用正确的列名
+        if "成分券代码" in cons.columns and "成分券名称" in cons.columns:
+            cons_list = cons.rename(columns={
+                "成分券代码": "ticker",
+                "成分券名称": "company_name"
+            })[["ticker", "company_name"]].drop_duplicates().itertuples(index=False)
+        elif "Security code" in cons.columns and "Security name" in cons.columns:
+             cons_list = cons.rename(columns={
+                "Security code": "ticker",
+                "Security name": "company_name"
+            })[["ticker", "company_name"]].drop_duplicates().itertuples(index=False)
+        else:
+            raise KeyError("无法识别成分股列表的列名，请检查 CSV 文件格式。")
+            
         tickers_with_names = list(cons_list)
     except Exception as e:
         print(f"❌ 获取中证800成分股失败: {e}")
