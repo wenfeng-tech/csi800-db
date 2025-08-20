@@ -24,7 +24,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install akshare pandas supabase-py
+          pip install akshare pandas supabase
 
       - name: Run data sync script
         # 将仓库 Secrets 注入到环境变量中，供 Python 脚本读取
