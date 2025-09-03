@@ -18,7 +18,7 @@ def main():
 
     supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-    sync_mode = 'daily' # <-- 在此切换模式: 'full' 或 'daily'
+    sync_mode = 'full' # <-- 在此切换模式: 'full' 或 'daily'
 
     print(f"当前运行模式: {sync_mode}")
     if sync_mode == 'full':
