@@ -1,0 +1,49 @@
+name: Data Sync Workflows
+
+on:
+  # 每日自动任务
+  schedule:
+    - cron: '0 9 * * *' # 每天北京时间下午 5:00 运行
+  # 手动任务
+  workflow_dispatch:
+    inputs:
+      sync_mode:
+        description: '选择同步模式'
+        required: true
+        default: 'daily'
+        type: choice
+        options:
+          - full
+          - partial
+          - daily
+
+jobs:
+  sync-data:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 🚀 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🐍 Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: 📦 Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install akshare pandas supabase
+
+      - name: 🏃 Run data sync script
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          # 根据手动输入的参数或默认值来执行脚本
+          if [ "${{ github.event.inputs.sync_mode }}" == "full" ]; then
+            python sync_data.py full
+          elif [ "${{ github.event.inputs.sync_mode }}" == "partial" ]; then
+            python sync_data.py partial
+          else
+            python sync_data.py daily
+          fi
