@@ -31,7 +31,6 @@ jobs:
         with:
           python-version: '3.10'
 
-      # 优化: 缓存pip依赖项
       - name: 📥 Cache pip dependencies
         uses: actions/cache@v4
         with:
@@ -43,13 +42,12 @@ jobs:
       - name: 📦 Install dependencies
         run: |
           python -m pip install --upgrade pip
-          # 建议创建一个 requirements.txt 文件包含以下内容
+          # 建议创建一个 requirements.txt 文件包含以下内容，然后运行 pip install -r requirements.txt
           # akshare
           # pandas
           # supabase
           # "concurrent-log-handler<1"
-          # tenacity
-          pip install akshare pandas supabase "concurrent-log-handler<1" tenacity
+          pip install akshare pandas supabase "concurrent-log-handler<1"
 
       - name: 🏃 Run main data sync script
         env:
@@ -63,8 +61,8 @@ jobs:
   run-verification-job:
     runs-on: ubuntu-latest
     needs: run-main-sync
-    # 优化: 增加对 verify 模式的判断，避免手动触发时重复执行
-    if: always() && needs.run-main-sync.outputs.dispatch_mode != 'full' && needs.run-main-sync.outputs.dispatch_mode != 'partial' && needs.run-main-sync.outputs.dispatch_mode != 'verify'
+    # 修改: 恢复了手动verify时运行两次的逻辑
+    if: always() && needs.run-main-sync.outputs.dispatch_mode != 'full' && needs.run-main-sync.outputs.dispatch_mode != 'partial'
 
     steps:
       - name: 🚀 Checkout code
@@ -75,7 +73,6 @@ jobs:
         with:
           python-version: '3.10'
 
-      # 优化: 缓存pip依赖项
       - name: 📥 Cache pip dependencies
         uses: actions/cache@v4
         with:
@@ -87,8 +84,8 @@ jobs:
       - name: 📦 Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install akshare pandas supabase "concurrent-log-handler<1" tenacity
-
+          pip install akshare pandas supabase "concurrent-log-handler<1"
+          
       - name: ⏳ Add a delay before verification
         run: echo "Waiting 5 minutes for API rate limits to cool down..." && sleep 300
 
