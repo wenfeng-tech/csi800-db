@@ -87,7 +87,7 @@ jobs:
           pip install akshare pandas supabase "concurrent-log-handler<1"
           
       - name: ⏳ Add a delay before verification
-        run: echo "Waiting 5 minutes for API rate limits to cool down..." && sleep 300
+        run: echo "Waiting 1 minutes for API rate limits to cool down..." && sleep 60
 
       - name: 🕵️ Run verification and retry script
         env:
