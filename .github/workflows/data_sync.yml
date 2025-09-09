@@ -1,11 +1,9 @@
 name: Data Sync Workflows
 
 on:
-  # 每日自动任务 (时间可以提前，例如在北京时间下午4点半)
   schedule:
     - cron: '30 8 * * *' # 每天 UTC 时间 8:30 (北京时间下午 4:30) 运行
 
-  # 手动任务
   workflow_dispatch:
     inputs:
       sync_mode:
@@ -17,14 +15,12 @@ on:
           - full
           - partial
           - daily
-          - verify # 新增手动校验选项
+          - verify
 
 jobs:
-  # Job 1: 执行主要的同步任务
   run-main-sync:
     runs-on: ubuntu-latest
     outputs:
-      # 输出手动触发时选择的模式，以便校验任务可以跳过
       dispatch_mode: ${{ github.event.inputs.sync_mode }}
     steps:
       - name: 🚀 Checkout code
@@ -35,31 +31,41 @@ jobs:
         with:
           python-version: '3.10'
 
+      # 优化: 缓存pip依赖项
+      - name: 📥 Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
       - name: 📦 Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install akshare pandas supabase "concurrent-log-handler<1"
+          # 建议创建一个 requirements.txt 文件包含以下内容
+          # akshare
+          # pandas
+          # supabase
+          # "concurrent-log-handler<1"
+          # tenacity
+          pip install akshare pandas supabase "concurrent-log-handler<1" tenacity
 
       - name: 🏃 Run main data sync script
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: |
-          # 如果是手动触发，则使用输入的模式
-          # 如果是定时任务(schedule)，则默认为 daily
           MODE=${{ github.event.inputs.sync_mode || 'daily' }}
           echo "Running main sync with mode: $MODE"
           python sync_data.py $MODE
 
-  # Job 2: 专门用于校验和修复数据
   run-verification-job:
     runs-on: ubuntu-latest
-    # `needs` 确保这个 job 在上一个 job 结束后运行
     needs: run-main-sync
-    # `if: always()` 确保无论上一个 job 成功还是失败，这个 job 都会运行
-    # 但是我们不希望在手动运行 full 或 partial 时也校验，因为那没意义
-    if: always() && needs.run-main-sync.outputs.dispatch_mode != 'full' && needs.run-main-sync.outputs.dispatch_mode != 'partial'
-    
+    # 优化: 增加对 verify 模式的判断，避免手动触发时重复执行
+    if: always() && needs.run-main-sync.outputs.dispatch_mode != 'full' && needs.run-main-sync.outputs.dispatch_mode != 'partial' && needs.run-main-sync.outputs.dispatch_mode != 'verify'
+
     steps:
       - name: 🚀 Checkout code
         uses: actions/checkout@v4
@@ -69,14 +75,21 @@ jobs:
         with:
           python-version: '3.10'
 
+      # 优化: 缓存pip依赖项
+      - name: 📥 Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
       - name: 📦 Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install akshare pandas supabase "concurrent-log-handler<1"
-          
+          pip install akshare pandas supabase "concurrent-log-handler<1" tenacity
+
       - name: ⏳ Add a delay before verification
-        # 在主任务和校验任务之间增加一个延迟（例如5分钟）
-        # 这可以等待API服务器解除对您IP的临时限制
         run: echo "Waiting 5 minutes for API rate limits to cool down..." && sleep 300
 
       - name: 🕵️ Run verification and retry script
