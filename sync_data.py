@@ -123,74 +123,67 @@ def fetch_and_insert_stocks(supabase_client: Client, stock_info: dict, start_dat
 
 
 def verify_and_retry_sync(supabase_client: Client, target_stocks: dict):
-    """【校验修复模式】检查数据完整性，并为缺失股票进行精确修复。"""
-    logging.info("开始执行数据校验与修复 (精确模式)...")
+    """
+    【校验修复模式 - 简化版】
+    检查数据库，找出所有未达到最新交易日期的股票，并对它们统一执行一次小规模的每日更新。
+    """
+    logging.info("开始执行数据校验与修复 (简化模式)...")
     
     if not target_stocks:
         logging.warning("目标股票列表为空，校验任务终止。")
         return
     
     try:
+        # 1. 获取数据库中所有记录，以确定基准日期
         response = supabase_client.table("csi800_daily_data").select("stock_code, trade_date").execute()
         db_data = pd.DataFrame(response.data)
-        db_summary = {}
-        if not db_data.empty:
-            db_summary = db_data.groupby('stock_code')['trade_date'].max().to_dict()
-    except Exception as e:
-        logging.error(f"从Supabase获取数据状态失败: {e}。无法执行精确修复。")
-        return
-
-    retry_stock_info = {}
-    retry_start_dates = {}
-    latest_trading_day_threshold = (datetime.now() - timedelta(days=4)).strftime('%Y-%m-%d')
-    fallback_start_date = (datetime.now() - timedelta(days=365)).strftime('%Y%m%d')
-
-    for code, name in target_stocks.items():
-        start_date_for_fetch = None
-        if code in db_summary:
-            last_date_str = db_summary[code]
-            if last_date_str < latest_trading_day_threshold:
-                start_date_obj = datetime.strptime(last_date_str, '%Y-%m-%d') + timedelta(days=1)
-                start_date_for_fetch = start_date_obj.strftime('%Y%m%d')
-                logging.info(f"发现落后股票: {code} ({name}), 最新日期: {last_date_str}。将从 {start_date_for_fetch} 开始同步。")
-        else:
-            start_date_for_fetch = fallback_start_date
-            logging.info(f"发现缺失股票: {code} ({name})。将从 {fallback_start_date} 开始同步。")
         
-        if start_date_for_fetch:
-            retry_stock_info[code] = name
-            retry_start_dates[code] = start_date_for_fetch
+        if db_data.empty:
+            logging.warning("数据库为空，无法执行校验。建议先运行 'partial' 或 'full' 模式进行初始化。")
+            # 将所有目标股票视为缺失，并进行一次每日更新
+            logging.info("将为所有目标股票执行一次每日增量同步...")
+            start_date_for_retry = (datetime.now() - timedelta(days=5)).strftime('%Y%m%d')
+            fetch_and_insert_stocks(supabase_client, target_stocks, start_date_for_retry, "数据库初始化修复")
+            return
+            
+        # 2. 确定唯一的最新交易日作为基准
+        latest_market_date = db_data['trade_date'].max()
+        logging.info(f"数据库中的最新交易日基准为: {latest_market_date}")
 
-    if not retry_stock_info:
-        logging.info("✅ 数据校验完成，所有股票数据都是最新的。")
+        # 3. 找出所有落后或缺失的股票
+        db_summary = db_data.groupby('stock_code')['trade_date'].max()
+        
+        retry_stock_info = {}
+        # 找出数据落后的股票
+        lagging_codes = db_summary[db_summary < latest_market_date].index
+        for code in lagging_codes:
+            if code in target_stocks:
+                retry_stock_info[code] = target_stocks[code]
+
+        # 找出完全缺失的股票
+        db_codes = set(db_summary.index)
+        for code, name in target_stocks.items():
+            if code not in db_codes:
+                retry_stock_info[code] = name
+        
+        if not retry_stock_info:
+            logging.info(f"✅ 数据校验完成，所有股票数据都已更新至 {latest_market_date}。")
+            return
+
+        logging.info(f"\n共发现 {len(retry_stock_info)} 只股票未达到最新日期。准备进行一次针对性的每日更新...")
+        
+        # 4. 对这些股票统一执行一次“每日更新”
+        start_date_for_retry = (datetime.now() - timedelta(days=5)).strftime('%Y%m%d')
+        fetch_and_insert_stocks(
+            supabase_client=supabase_client,
+            stock_info=retry_stock_info,
+            start_date=start_date_for_retry,
+            task_desc="校验修复同步"
+        )
+
+    except Exception as e:
+        logging.error(f"执行校验修复时发生严重错误: {e}")
         return
-
-    logging.info(f"\n共发现 {len(retry_stock_info)} 个修复任务。开始执行...")
-    
-    batch_data_frames = []
-    total_inserted_records = 0
-    total_stocks = len(retry_stock_info)
-
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        futures = {executor.submit(get_stock_history, code, name, retry_start_dates[code]): (code, name) 
-                   for code, name in retry_stock_info.items()}
-
-        for i, future in enumerate(as_completed(futures)):
-            code, name = futures[future]
-            try:
-                df = future.result()
-                if not df.empty:
-                    batch_data_frames.append(df)
-                    logging.info(f"修复进度: {i + 1}/{total_stocks} | 成功修复 {code} ({name}) 的 {len(df)} 条数据。")
-            except Exception as e:
-                logging.error(f"修复进度: {i + 1}/{total_stocks} | 修复股票 {code} ({name}) 时发生严重错误: {e}")
-
-            if len(batch_data_frames) >= BATCH_SIZE or (i + 1) == total_stocks:
-                inserted_count = execute_batch_upsert(supabase_client, batch_data_frames)
-                total_inserted_records += inserted_count
-                batch_data_frames = []
-
-    logging.info(f"🚀 校验与修复任务完成！总共成功插入 {total_inserted_records} 条新记录。")
 
 
 def main():
