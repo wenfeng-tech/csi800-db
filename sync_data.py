@@ -1,6 +1,5 @@
 import os
 import sys
-import time
 import logging
 import argparse
 from datetime import datetime, timedelta
@@ -9,11 +8,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import akshare as ak
 import pandas as pd
 from supabase import create_client, Client
-from tenacity import retry, stop_after_attempt, wait_fixed
 
 # --- 配置区域 ---
 
-# 优化: 使用 logging 模块替代 print
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -26,7 +23,7 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
 # 设置并发下载的线程数
 MAX_WORKERS = 10
-# 新增: 设置数据库分批插入的大小
+# 设置数据库分批插入的大小
 BATCH_SIZE = 50
 
 # --- 数据获取与处理函数 ---
@@ -43,11 +40,10 @@ def get_csi800_stock_info() -> dict:
         logging.error(f"错误：获取中证800成分股列表失败 - {e}")
         return {}
 
-# 优化: 增加 tenacity 自动重试机制
-@retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
+
 def get_stock_history(stock_code: str, stock_name: str, start_date: str) -> pd.DataFrame:
     """
-    获取单只股票历史数据。包含3次重试逻辑。
+    获取单只股票历史数据。不包含内部重试逻辑。
     """
     try:
         stock_hist_df = ak.stock_zh_a_hist(symbol=stock_code, period="daily", start_date=start_date, adjust="qfq")
@@ -66,10 +62,10 @@ def get_stock_history(stock_code: str, stock_name: str, start_date: str) -> pd.D
                 'open', 'high', 'low', 'close', 'volume'
             ]
             return stock_hist_df[required_columns]
+            
     except Exception as e:
-        # 此异常将在所有重试失败后被外层捕获
-        logging.warning(f"获取股票 {stock_code} ({stock_name}) 数据在3次尝试后依然失败 - {e}")
-        raise  # 重新抛出异常，以便上层知道最终失败了
+        logging.warning(f"获取股票 {stock_code} ({stock_name}) 数据失败 - {e}")
+        raise  # 重新抛出异常，以便上层知道失败了
 
     return pd.DataFrame()
 
@@ -117,7 +113,7 @@ def fetch_and_insert_stocks(supabase_client: Client, stock_info: dict, start_dat
             except Exception as e:
                 logging.error(f"进度: {i + 1}/{total_stocks} | 处理股票 {code} ({name}) 时发生严重错误: {e}")
 
-            # 优化: 分批处理逻辑
+            # 分批处理逻辑
             if len(batch_data_frames) >= BATCH_SIZE or (i + 1) == total_stocks:
                 inserted_count = execute_batch_upsert(supabase_client, batch_data_frames)
                 total_inserted_records += inserted_count
@@ -171,7 +167,6 @@ def verify_and_retry_sync(supabase_client: Client, target_stocks: dict):
 
     logging.info(f"\n共发现 {len(retry_stock_info)} 个修复任务。开始执行...")
     
-    # 复用分批下载和插入逻辑
     batch_data_frames = []
     total_inserted_records = 0
     total_stocks = len(retry_stock_info)
@@ -204,13 +199,12 @@ def main():
         logging.error("关键配置缺失：请设置 SUPABASE_URL 和 SUPABASE_KEY 环境变量。")
         raise ValueError("Missing Supabase credentials")
 
-    # 优化: 使用 argparse 进行参数管理
     parser = argparse.ArgumentParser(description="中证800股票数据同步工具")
     parser.add_argument(
         "mode",
         choices=['daily', 'full', 'partial', 'verify'],
         default='daily',
-        nargs='?', # '?' 使参数变为可选，并使用 default
+        nargs='?',
         help="选择同步模式: 'daily' (近5天), 'full' (全部历史), 'partial' (自2015年), 'verify' (校验修复)."
     )
     args = parser.parse_args()
@@ -220,7 +214,6 @@ def main():
     
     supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
     
-    # 优化: 在 main 函数中统一获取股票列表
     logging.info("正在获取最新的中证800成分股列表...")
     stock_info = get_csi800_stock_info()
     if not stock_info:
